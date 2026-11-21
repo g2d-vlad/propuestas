@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#8a191b"><title>JamBurger BLE Comanda</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;background:#f8f5f1;color:#241e1a;margin:0}header{background:#8a191b;color:white;padding:22px 16px}header h1{margin:0;font-size:26px}header small{opacity:.86}main{max-width:520px;margin:auto;padding:15px}section{background:white;padding:18px;margin:0 0 14px;border:1px solid #e9e1d9;border-radius:12px}h2{font-size:18px;margin:0 0 10px}button{border:0;border-radius:8px;background:#8a191b;color:white;padding:14px;width:100%;font-size:16px;font-weight:bold;margin:5px 0}button.secondary{background:#24211f}button:disabled{opacity:.36}textarea{width:100%;height:180px;font:15px monospace;border:1px solid #ddd;border-radius:8px;padding:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px monospace;background:#222;color:#b5ffcc;padding:10px;border-radius:8px;max-height:200px;overflow:auto}.status{padding:12px;background:#f5f1ed;border-radius:8px;margin:10px 0}p{font-size:14px;line-height:1.5;color:#665b52}code{font:13px monospace}
+</style></head><body>
+<header><h1>🍔 JamBurger</h1><small>Prueba Bluetooth directa · iPhone / Bluefy · comanda final · BLE Link</small></header>
+<main>
+<section><h2>1. Conectar impresora</h2><p>POS-5890A-L · Servicio <code>FF00</code> · Escritura <code>FF02</code></p><div id="status" class="status">Sin conectar. Abre esta página en Bluefy.</div><button id="connect">Conectar BlueTooth Printer</button><button class="secondary" id="connectAll">Buscar todos (alternativa)</button><button class="secondary" id="disconnect" disabled>Desconectar</button><p>Usa primero «Conectar BlueTooth Printer». Si hay error, copia el diagnóstico de abajo.</p></section>
+<section><h2>2. Comprobar conexión</h2><p>Envía <code>1B404A410A0A</code>, probado desde nRF Connect para imprimir JA. No se confirma hasta que salga papel.</p><button id="test" disabled>Imprimir JA (control)</button></section>
+<section><h2>3. Comanda JamBurger (prueba final)</h2><p>Este ticket es una DEMOSTRACION; no registra una venta. Puedes editar el contenido antes de imprimirlo.</p><textarea id="ticket">         JAMBURGER
+      COMANDA DE PRUEBA
+-------------------------------
+AREA: COCINA
+PEDIDO: DEMOSTRACION
+-------------------------------
+1x HAMBURGUESA CLASICA
+1x PAPAS FRITAS
+-------------------------------
+NO ES UNA VENTA REAL
+</textarea><button id="print" disabled>IMPRIMIR COMANDA DE PRUEBA</button></section>
+<section><h2>Diagnóstico</h2><pre id="log">Laboratorio inicializado.</pre><button class="secondary" id="copy">Copiar diagnóstico</button></section><p>La página usa HTTPS y Web Bluetooth. La prueba se confirma únicamente si sale papel. No conectes nRF Connect simultáneamente.</p>
+</main><script>
+const $=id=>document.getElementById(id), serviceUUID=0xff00, charUUID=0xff02;
+let device,characteristic,busy=false;
+const log=m=>{const el=$('log');el.textContent+='\n'+new Date().toLocaleTimeString()+' '+m;el.scrollTop=el.scrollHeight};
+const status=m=>$('status').textContent=m;
+const explain=e=>{if(e==null)return 'Error sin detalles devuelto por Bluefy ('+String(e)+')';if(typeof e==='string')return e;return ['name='+String(e.name??'(sin nombre)'), 'message='+String(e.message??'(sin mensaje)'), 'code='+String(e.code??'(sin código)'), 'text='+String(e)].join('; ')};
+function refresh(){const ok=!!characteristic&&!!device?.gatt?.connected;$('connect').disabled=$('connectAll').disabled=busy||ok;$('disconnect').disabled=busy||!device;$('test').disabled=$('print').disabled=busy||!ok}
+function disconnected(){characteristic=null;status('Desconectada');log('Bluetooth desconectado');refresh()}
+async function connect(mode='name'){
+ if(busy)return;busy=true;refresh();
+ let step='inicio';
+ try{
+  if(!isSecureContext)throw Error('Debe abrirse por HTTPS');
+  if(!navigator.bluetooth || typeof navigator.bluetooth.requestDevice!=='function')throw Error('Este navegador no expone Web Bluetooth. Abre en Bluefy.');
+  const options=mode==='name' ? {filters:[{name:'BlueTooth Printer'}],optionalServices:[0xff00]} : {acceptAllDevices:true,optionalServices:[0xff00]};
+  step='selector de dispositivo';
+  log('Solicitando dispositivo, modo '+mode+'. WebBluetooth='+!!navigator.bluetooth);
+  device=await navigator.bluetooth.requestDevice(options);
+  if(!device)throw Error('El selector no devolvió ningún dispositivo');
+  log('Dispositivo: '+(device.name||'(sin nombre)')+'; ID='+String(device.id??'no disponible'));
+  if(!device.gatt)throw Error('Bluefy devolvió un dispositivo sin interfaz GATT');
+  device.addEventListener('gattserverdisconnected',disconnected);
+  step='conexión GATT';
+  const server=await device.gatt.connect();log('GATT conectado');
+  step='servicio FF00';
+  const svc=await server.getPrimaryService(0xff00);log('Servicio FF00 encontrado');
+  step='característica FF02';
+  characteristic=await svc.getCharacteristic(0xff02);
+  if(!characteristic){
+    log('getCharacteristic devolvió '+String(characteristic));
+    if(typeof svc.getCharacteristics==='function'){
+      const chars=await svc.getCharacteristics();
+      log('Características disponibles: '+chars.map(x=>x?.uuid??'?').join(', '));
+      characteristic=chars.find(x=>/^(?:0x)?ff02$|0000ff02-0000-1000-8000-00805f9b34fb/i.test(String(x?.uuid)));
+    }
+  }
+  if(!characteristic)throw Error('FF02 no disponible; getCharacteristic no devolvió un objeto');
+  const props=characteristic.properties;
+  const methods={withoutResponse:typeof characteristic.writeValueWithoutResponse==='function',withResponse:typeof characteristic.writeValueWithResponse==='function',legacy:typeof characteristic.writeValue==='function'};
+  log('FF02 obtenido. Properties='+String(props?'presentes':'ausentes')+'; Write='+String(props?.write??'no informado')+'; WWR='+String(props?.writeWithoutResponse??'no informado'));
+  log('Métodos de escritura: '+JSON.stringify(methods));
+  if(!methods.withoutResponse&&!methods.withResponse&&!methods.legacy)throw Error('BLE Link no expone ningún método de escritura en FF02');
+  status('Conectada a FF02. Lista para probar JA.');
+ }catch(e){
+   const detail=explain(e);
+   log('ERROR en '+step+': '+detail);
+   status('No conectada ('+step+'). Revisa el diagnóstico.');
+   characteristic=null;
+   try{device?.gatt?.disconnect()}catch(_){}
+ }finally{busy=false;refresh()}
+}
+async function send(bytes,label){
+ if(!characteristic||!device?.gatt?.connected){log('Sin conexión BLE');return}
+ busy=true;refresh();
+ try{
+ const noResp=typeof characteristic.writeValueWithoutResponse==='function';
+ const resp=typeof characteristic.writeValueWithResponse==='function';
+ const legacy=typeof characteristic.writeValue==='function';
+ if(!noResp&&!resp&&!legacy)throw Error('FF02 no tiene método de escritura');
+ const chosen=noResp?'writeValueWithoutResponse':(resp?'writeValueWithResponse':'writeValue');
+ log('Envío '+label+' por '+chosen+', bytes='+bytes.length);
+ for(let i=0;i<bytes.length;i+=20){
+   const chunk=bytes.slice(i,i+20);
+   await characteristic[chosen](chunk);
+   await new Promise(r=>setTimeout(r,100));
+ }
+ log(label+': '+bytes.length+' bytes enviados sin error del navegador');
+ status('Datos enviados. Confirma si salió papel.');
+ }catch(e){log('ERROR imprimir: '+explain(e));status('Error al imprimir. Copia diagnóstico.')}
+ finally{busy=false;refresh()}
+}
+function bytesFromTicket(input){
+ const ascii=input.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x20-\x7E\r\n]/g,'?');
+ const lines=ascii.replace(/\r/g,'').split('\n').flatMap(s=>s.match(/.{1,32}/g)||['']);
+ return new TextEncoder().encode(lines.join('\n')+'\n\n\n');
+}
+$('connect').onclick=()=>connect('name');
+$('connectAll').onclick=()=>connect('all');
+$('disconnect').onclick=()=>{device?.gatt?.disconnect();disconnected()};
+$('test').onclick=()=>send(new Uint8Array([0x1B,0x40,0x4A,0x41,0x0A,0x0A]),'JA');
+$('print').onclick=()=>{let text=bytesFromTicket($('ticket').value);let data=new Uint8Array(text.length+2);data.set([0x1B,0x40]);data.set(text,2);send(data,'COMANDA')};
+$('copy').onclick=()=>navigator.clipboard.writeText($('log').textContent).then(()=>log('Diagnóstico copiado')).catch(e=>log(e.message));
+log('Web Bluetooth '+Boolean(navigator.bluetooth)+'; HTTPS='+isSecureContext);log('Agente: '+navigator.userAgent);refresh();
+</script></body></html>
